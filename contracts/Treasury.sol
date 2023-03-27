@@ -1,70 +1,65 @@
-pragma solidity 0.6.12;
-pragma experimental ABIEncoderV2;
+pragma solidity 0.8.17;
 
-// These are the core Yearn libraries
-import {
-    SafeERC20,
-    IERC20,
-    Address
-} from "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./TradeHandlerHelper.sol";
 
-contract Treasury is ReentrancyGuard {
-    using SafeERC20 for IERC20;
-    using Address for address;
+contract Treasury {
+    address payable public governance;
+    address payable public pendingGovernance;
 
-    address public governance;
-    address public pendingGovernance;
+    event SweptToken(address token, uint amount);
+    event SweptETH(uint amount);
+    event PendingGovernance(address newPendingGov);
+    event AcceptedGovernance(address newGov);
 
-    event RetrieveToken (address token,uint amount);
-    event RetrieveETH (uint amount);
-    event PendingGovernance (address newPendingGov);
-    event AcceptedGovernance (address newGov);
-    event FailedETHSend(bytes returnedData);
-
-    receive() external payable {}
-
-    constructor() public {
-        governance = msg.sender;
+    constructor(address payable _governance) public {
+        governance = _governance;
     }
 
-    modifier onlyGovernance {
+    modifier onlyGovernance() {
         require(msg.sender == governance, "!governance");
         _;
     }
 
-    function setGovernance(address _newGov) external onlyGovernance {
+    function setGovernance(address payable _newGov) external onlyGovernance {
         require(_newGov != address(0));
         pendingGovernance = _newGov;
         emit PendingGovernance(_newGov);
     }
 
-    function acceptGovernance() external{
+    function acceptGovernance() external {
         require(msg.sender == pendingGovernance, "!pendingGovernance");
         governance = pendingGovernance;
-        pendingGovernance = address(0);
+        delete pendingGovernance;
         emit AcceptedGovernance(governance);
     }
 
-    //Retrieve full balance of token in contract
-    function retrieveToken(address _token) external onlyGovernance {
-        retrieveTokenExact(_token, IERC20(_token).balanceOf(address(this)));
+    function sweep(
+        address[] calldata _tokens,
+        uint256[] calldata _amounts
+    ) external onlyGovernance {
+        uint256 _size = _tokens.length;
+        require(_size == _amounts.length);
+
+        for (uint256 i = 0; i < _size; i++) {
+            if (_tokens[i] == address(0)) {
+                // Native ETH
+                TradeHandlerHelper.safeTransferETH(governance, _amounts[i]);
+                emit SweptETH(_amounts[i]);
+            } else {
+                // ERC20s
+                TradeHandlerHelper.safeTransfer(
+                    _tokens[i],
+                    governance,
+                    _amounts[i]
+                );
+                emit SweptToken(_tokens[i], _amounts[i]);
+            }
+        }
     }
 
-    function retrieveTokenExact(address _token, uint _amount) public onlyGovernance {
-        IERC20(_token).safeTransfer(governance, _amount);
-        emit RetrieveToken(_token, _amount);
-    }
+    // `fallback` is called when msg.data is not empty
+    fallback() external payable {}
 
-    function retrieveETH() external onlyGovernance {
-        retrieveETHExact(address(this).balance);
-    }
-
-    function retrieveETHExact(uint _amount) public onlyGovernance nonReentrant {
-        (bool success, bytes memory returnData) = governance.call{value: _amount}("");
-        if(!success) {emit FailedETHSend(returnData);}
-        require(success, "Sending ETH failed");
-        emit RetrieveETH(_amount);
-    }
-
+    // `receive` is called when msg.data is empty
+    receive() external payable {}
 }
